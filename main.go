@@ -2,11 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/base64"
-	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -14,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 )
 
 type s3opts struct {
@@ -34,82 +30,13 @@ func initOptions() s3opts {
 	}
 }
 
+const minSecretLength = 128
+const SharedSecretEnv = "SHARED_SECRET"
+const AuthorizationHeader = "Authorization"
+
 var client *s3.Client
 var envOpts = initOptions()
 var allowInsecure = false
-
-func getCertsFromEnv() (*tls.Config, error) {
-	base64Ca := os.Getenv("CA_CERT")
-	base64ServerCrt := os.Getenv("SERVER_CERT")
-	base64ServerKey := os.Getenv("SERVER_KEY")
-
-	rawCa, err := base64.StdEncoding.DecodeString(base64Ca)
-	if err != nil {
-		return nil, err
-	}
-	rawServerCrt, err := base64.StdEncoding.DecodeString(base64ServerCrt)
-	if err != nil {
-		return nil, err
-	}
-	rawServerKey, err := base64.StdEncoding.DecodeString(base64ServerKey)
-	if err != nil {
-		return nil, err
-	}
-
-	caCrt, err := x509.ParseCertificate(rawCa)
-	if err != nil {
-		return nil, err
-	}
-	serverCrt, err := x509.ParseCertificate(rawServerCrt)
-	if err != nil {
-		return nil, err
-	}
-	privateKey := parsePk(rawServerKey, serverCrt.PublicKeyAlgorithm)
-	if privateKey == nil {
-		return nil, fmt.Errorf("unable to parse private key")
-	}
-	crtPool := x509.NewCertPool()
-	crtPool.AddCert(caCrt)
-	tlsCrt := tls.Certificate{
-		Certificate: [][]byte{rawServerCrt, rawCa},
-		PrivateKey:  privateKey,
-		Leaf:        serverCrt,
-	}
-
-	return &tls.Config{
-		Certificates: []tls.Certificate{tlsCrt},
-		RootCAs:      crtPool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    crtPool,
-	}, nil
-
-}
-
-func parsePk(raw []byte, alg x509.PublicKeyAlgorithm) crypto.PrivateKey {
-	switch alg {
-	case x509.RSA:
-		pk, err := x509.ParsePKCS1PrivateKey(raw)
-		if err != nil {
-			return nil
-		}
-		return pk
-	case x509.ECDSA:
-		pk, err := x509.ParseECPrivateKey(raw)
-		if err != nil {
-			return nil
-		}
-		return pk
-	case x509.Ed25519:
-		pk, err := x509.ParsePKCS1PrivateKey(raw)
-		if err != nil {
-			return nil
-		}
-		return pk
-	default:
-		return nil
-	}
-
-}
 
 func checkAllowInsecure() bool {
 	ans := os.Getenv("ALLOW_INSECURE")
@@ -119,16 +46,21 @@ func checkAllowInsecure() bool {
 	return allowInsecure
 }
 
-func initServ() *http.Server {
-	var tlsConfig *tls.Config = nil
-	if !checkAllowInsecure() {
-		conf, err := getCertsFromEnv()
-		if err != nil {
-			slog.Error("Error getting cert from env")
-			os.Exit(1)
-		}
-		tlsConfig = conf
+type verifySecretHandler struct {
+	sharedSecret string
+	mux          *http.ServeMux
+}
+
+func (mu *verifySecretHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get(AuthorizationHeader) == mu.sharedSecret {
+		mu.mux.ServeHTTP(w, r)
+	} else {
+		w.WriteHeader(http.StatusForbidden)
 	}
+}
+
+func initServ() *http.Server {
+	var handler http.Handler
 
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
@@ -146,10 +78,24 @@ func initServ() *http.Server {
 	mux.HandleFunc("GET /get/{key...}", getObjectHandler)
 	mux.HandleFunc("PUT /put", putObjectHandler)
 	mux.HandleFunc("DELETE /delete/{key...}", deleteObjectHandler)
+
+	if checkAllowInsecure() {
+		handler = mux
+	} else {
+		secret := os.Getenv(SharedSecretEnv)
+		if len(secret) < minSecretLength {
+			minLen := strconv.Itoa(minSecretLength)
+			slog.Error("Invalid shared secret value, must be at least " + minLen + " bytes")
+		}
+		handler = &verifySecretHandler{
+			sharedSecret: secret,
+			mux:          mux,
+		}
+	}
+
 	return &http.Server{
-		Handler:   mux,
-		Addr:      ":5000",
-		TLSConfig: tlsConfig,
+		Handler: handler,
+		Addr:    ":8080",
 	}
 }
 

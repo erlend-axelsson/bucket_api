@@ -74,6 +74,7 @@ func initServ() *http.Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", rootHandler)
+	mux.HandleFunc("GET /isalive", isAliveHandler)
 	mux.HandleFunc("GET /list", listObjectsHandler)
 	mux.HandleFunc("GET /get/{key...}", getObjectHandler)
 	mux.HandleFunc("PUT /put", putObjectHandler)

@@ -76,6 +76,7 @@ func initServ() *http.Server {
 	mux.HandleFunc("GET /", rootHandler)
 	mux.HandleFunc("GET /isalive", isAliveHandler)
 	mux.HandleFunc("GET /list", listObjectsHandler)
+	mux.HandleFunc("GET /list_articles", listArticlesHandler)
 	mux.HandleFunc("GET /get/{key...}", getObjectHandler)
 	mux.HandleFunc("PUT /put", putObjectHandler)
 	mux.HandleFunc("DELETE /delete/{key...}", deleteObjectHandler)

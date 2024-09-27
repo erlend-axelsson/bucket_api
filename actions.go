@@ -8,6 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"io"
 	"path"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -24,6 +26,39 @@ type Object struct {
 	LastModified *time.Time
 	ContentType  *string
 	Content      []byte
+}
+
+type Article struct {
+	ArticleKey    string   `json:"articleKey,omitempty"`
+	ArticleAssets []string `json:"articleAssets,omitempty"`
+}
+
+func listArticles() ([]Article, error) {
+	content, err := listObjects("/Articles")
+	if err != nil {
+		return nil, err
+	}
+	var buckets = make(map[string]Article)
+	for _, info := range content {
+		dirName, filename := filepath.Split(info.Key)
+		if filename != "" {
+			article, ok := buckets[dirName]
+			if !ok {
+				article = Article{}
+			}
+			if strings.HasSuffix(filename, ".html") {
+				article.ArticleKey = info.Key
+			} else {
+				article.ArticleAssets = append(article.ArticleAssets, article.ArticleKey)
+			}
+			buckets[dirName] = article
+		}
+	}
+	var out []Article
+	for _, article := range buckets {
+		out = append(out, article)
+	}
+	return out, err
 }
 
 func listObjects(prefix string) ([]contentInfo, error) {
